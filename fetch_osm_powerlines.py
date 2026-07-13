@@ -142,19 +142,19 @@ def fetch(bbox):
     raise RuntimeError(f"Hiçbir Overpass endpoint'i yanıt vermedi: {last_error}")
 
 
-def fetch_all_tiles(outer_bbox: tuple, tile_size_deg: float) -> list:
+def fetch_tiles(tiles: list) -> tuple:
     """
-    outer_bbox'ı tile_size_deg boyutunda kutucuklara bölüp her birini ayrı
-    ayrı sorgular, tüm 'way' elemanlarını id'ye göre tekilleştirip tek bir
-    listede döner. Bir tile başarısız olursa (zaman aşımı, 5xx vb.) o
-    tile'ı atlayıp diğerleriyle devam eder — tüm çalıştırmayı iptal etmez.
-    """
-    tiles = generate_tiles(outer_bbox, tile_size_deg)
-    print(f"Türkiye {len(tiles)} kutucuğa ({tile_size_deg}°x{tile_size_deg}°) bölündü, "
-          f"her biri ayrı ayrı sorgulanacak (bu birkaç dakika sürebilir)...")
+    Verilen tile (south, west, north, east) listesini tek tek sorgular,
+    tüm 'way' elemanlarını id'ye göre tekilleştirip döner. Bir tile
+    başarısız olursa (zaman aşımı, 5xx, DNS hatası vb.) o tile'ı atlayıp
+    diğerleriyle devam eder — tüm çalıştırmayı iptal etmez.
 
+    Dönüş: (elements listesi, başarısız_olan_tile'ların listesi)
+    başarısız_olan_tile'lar ileride --retry-failed ile tekrar denenebilsin
+    diye ham (south, west, north, east) tuple'ları olarak döner.
+    """
     elements_by_id = {}
-    failed_tiles = 0
+    failed_tiles = []
     for i, tile in enumerate(tiles):
         south, west, north, east = tile
         print(f"  [{i + 1}/{len(tiles)}] bbox=({south:.2f},{west:.2f},{north:.2f},{east:.2f}) sorgulanıyor...", end=" ")
@@ -168,16 +168,65 @@ def fetch_all_tiles(outer_bbox: tuple, tile_size_deg: float) -> list:
                     new_count += 1
             print(f"{len(tile_elements)} hat ({new_count} yeni).")
         except Exception as e:
-            failed_tiles += 1
+            failed_tiles.append(tile)
             print(f"[HATA] atlanıyor: {e}")
         if i < len(tiles) - 1:
             time.sleep(TILE_REQUEST_DELAY_SEC)
 
     if failed_tiles:
-        print(f"\n[UYARI] {failed_tiles}/{len(tiles)} kutucuk sorgulanamadı (Overpass zaman aşımı/hata). "
-              "Kapsam eksik olabilir; tekrar çalıştırmak bazı kutucukları kurtarabilir.")
+        print(f"\n[UYARI] {len(failed_tiles)}/{len(tiles)} kutucuk sorgulanamadı (Overpass zaman aşımı/hata). "
+              "Kapsam eksik olabilir; --retry-failed ile sadece bu kutucukları tekrar deneyebilirsin.")
 
-    return list(elements_by_id.values())
+    return list(elements_by_id.values()), failed_tiles
+
+
+def fetch_all_tiles(outer_bbox: tuple, tile_size_deg: float) -> tuple:
+    """
+    outer_bbox'ı tile_size_deg boyutunda kutucuklara bölüp fetch_tiles ile
+    sorgular. Dönüş: (elements listesi, başarısız_olan_tile'ların listesi).
+    """
+    tiles = generate_tiles(outer_bbox, tile_size_deg)
+    print(f"Türkiye {len(tiles)} kutucuğa ({tile_size_deg}°x{tile_size_deg}°) bölündü, "
+          f"her biri ayrı ayrı sorgulanacak (bu birkaç dakika sürebilir)...")
+    return fetch_tiles(tiles)
+
+
+def failed_tiles_path(output_geojson: str) -> str:
+    """--output-geojson yoluna göre başarısız-tile sidecar dosyasının yolunu üretir."""
+    base = output_geojson or "turkiye_hatlari.geojson"
+    return base + ".failed_tiles.json"
+
+
+def save_failed_tiles(path: str, tiles: list) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump([list(t) for t in tiles], f, ensure_ascii=False, indent=2)
+    print(f"[BİLGİ] {len(tiles)} başarısız kutucuk '{path}' dosyasına kaydedildi. "
+          f"Tekrar denemek için: --retry-failed {path}")
+
+
+def load_failed_tiles(path: str) -> list:
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    return [tuple(t) for t in raw]
+
+
+def load_existing_features_by_id(path: str) -> dict:
+    """
+    Önceki bir --output-geojson çalıştırmasından kalan feature'ları
+    properties.id'ye göre bir sözlükte döner (dosya yoksa boş sözlük).
+    --retry-failed sonrası yeni bulunan hatlarla birleştirmek için kullanılır.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            fc = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    result = {}
+    for feat in fc.get("features", []):
+        fid = feat.get("properties", {}).get("id")
+        if fid is not None:
+            result[fid] = feat
+    return result
 
 
 def _voltage_level_label(raw_voltage: str) -> str:
@@ -287,6 +336,12 @@ def main():
     parser.add_argument("--tile-size", type=float, default=DEFAULT_TILE_SIZE_DEG,
                          help=f"--country için kutucuk boyutu (derece). Varsayılan {DEFAULT_TILE_SIZE_DEG}. "
                               "Zaman aşımı çok oluyorsa küçült (örn. 1.0); daha hızlı bitsin istiyorsan büyüt.")
+    parser.add_argument("--retry-failed", type=str, default=None,
+                         help="Önceki --country çalıştırmasında başarısız olan kutucukların kaydedildiği "
+                              ".failed_tiles.json dosyasının yolu. Verilirse --country/--bbox yok sayılır, "
+                              "sadece bu dosyadaki kutucuklar tekrar sorgulanır ve sonuçlar --output-geojson "
+                              "ile verilen mevcut dosyayla birleştirilir (dosya varsa üzerine eklenir, "
+                              "yeniden başarısız olanlar aynı dosyaya güncellenerek yazılır).")
     parser.add_argument("--pick", type=int, default=None,
                          help="Listeden seçilecek hattın sıra numarası (sonuçları gördükten sonra tekrar çalıştır)")
     parser.add_argument("--output-geojson", type=str, default=None,
@@ -307,14 +362,42 @@ def main():
                               "boş sonuç alırsan bu filtreyi kaldırıp elle gözden geçirmen gerekebilir)")
     args = parser.parse_args()
 
-    if args.country:
-        elements = fetch_all_tiles(TURKEY_BBOX, args.tile_size)
+    retry_mode = args.retry_failed is not None
+    failed_tiles = []
+
+    if retry_mode:
+        tiles = load_failed_tiles(args.retry_failed)
+        print(f"'{args.retry_failed}' dosyasından {len(tiles)} başarısız kutucuk okundu, "
+              f"sadece bunlar tekrar sorgulanacak...")
+        elements, failed_tiles = fetch_tiles(tiles)
+    elif args.country:
+        elements, failed_tiles = fetch_all_tiles(TURKEY_BBOX, args.tile_size)
     else:
         print(f"Overpass'a sorgu gönderiliyor (bbox={args.bbox})...")
         result = fetch(tuple(args.bbox))
         elements = [el for el in result.get("elements", []) if el.get("type") == "way"]
 
+    # --country ya da --retry-failed sonrası, hâlâ başarısız olan kutucukları
+    # (varsa) sidecar dosyaya yaz/güncelle — sonraki --retry-failed çalıştırması
+    # için. retry_mode'da dosya, elimizdeki eski failed-tiles dosyasının yerini alır
+    # (başarılı olanlar listeden düşer, yeniden başarısız olanlar kalır).
+    if args.country or retry_mode:
+        ft_path = args.retry_failed if retry_mode else failed_tiles_path(args.output_geojson)
+        if failed_tiles:
+            save_failed_tiles(ft_path, failed_tiles)
+        elif retry_mode:
+            print(f"[BİLGİ] Tüm kutucuklar bu sefer başarılı oldu, '{ft_path}' siliniyor.")
+            try:
+                import os
+                os.remove(ft_path)
+            except OSError:
+                pass
+
     if not elements:
+        if retry_mode:
+            print("\nBu çalıştırmada hiç yeni hat bulunamadı (tüm tekrar denemeler de başarısız oldu "
+                  "ya da bu kutucuklarda zaten hat yoktu). Mevcut çıktı dosyası değişmeden kalıyor.")
+            sys.exit(0)
         print("\nHiç sonuç bulunamadı. Bu bölgede OSM'de haritalanmış power hattı yok görünüyor.")
         print("Öneriler: --bbox ile daha geniş bir alan dene, ya da manuel dijitalleştirmeye geç.")
         sys.exit(0)
@@ -343,10 +426,29 @@ def main():
                   "--max-voltage / --operator değerlerini gözden geçir.")
             sys.exit(1)
         fc = elements_to_feature_collection(filtered)
-        with open(args.output_geojson, "w", encoding="utf-8") as f:
-            json.dump(fc, f, ensure_ascii=False, indent=2)
-        print(f"\n{len(fc['features'])} hat '{args.output_geojson}' dosyasına yazıldı "
-              f"({len(elements) - len(filtered)} hat filtrelerle elendi).")
+
+        if retry_mode:
+            # Tekrar denenen kutucuklardan gelen yeni hatları, mevcut çıktı
+            # dosyasındaki hatlarla birleştir (üzerine yazma değil, ekleme).
+            existing_by_id = load_existing_features_by_id(args.output_geojson)
+            before_count = len(existing_by_id)
+            added = 0
+            for feat in fc["features"]:
+                fid = feat["properties"]["id"]
+                if fid not in existing_by_id:
+                    added += 1
+                existing_by_id[fid] = feat
+            merged_fc = {"type": "FeatureCollection", "features": list(existing_by_id.values())}
+            with open(args.output_geojson, "w", encoding="utf-8") as f:
+                json.dump(merged_fc, f, ensure_ascii=False, indent=2)
+            print(f"\n'{args.output_geojson}' güncellendi: {before_count} mevcut hat + {added} yeni hat "
+                  f"= toplam {len(merged_fc['features'])} hat.")
+        else:
+            with open(args.output_geojson, "w", encoding="utf-8") as f:
+                json.dump(fc, f, ensure_ascii=False, indent=2)
+            print(f"\n{len(fc['features'])} hat '{args.output_geojson}' dosyasına yazıldı "
+                  f"({len(elements) - len(filtered)} hat filtrelerle elendi).")
+
         print("\nToplu entegrasyon için sıradaki adım:")
         print(f"  python import_power_lines.py --input {args.output_geojson} --mode dry-run \\")
         print("      --name-field name --external-id-field id --voltage-field voltage_level")
