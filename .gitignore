@@ -1,0 +1,13 @@
+# Ortam değişkenleri — ASLA git'e eklenmemeli
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# İşletim sistemi / editör dosyaları
+.DS_Store
+.vscode/
+.idea/
