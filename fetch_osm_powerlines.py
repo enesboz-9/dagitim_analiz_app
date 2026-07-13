@@ -54,6 +54,15 @@ OVERPASS_ENDPOINTS = [
     "https://overpass.kumi.systems/api/interpreter",
 ]
 
+# urllib'in varsayılan User-Agent'ı ("Python-urllib/3.x") bazı Overpass
+# aynalarında (özellikle overpass-api.de) "406 Not Acceptable" ile
+# reddediliyor; tanımlayıcı bir User-Agent göndermek bunu çözüyor.
+REQUEST_HEADERS = {
+    "User-Agent": "dagitim-analiz-app-fetch-osm-powerlines/1.0 (+https://github.com/)",
+    "Content-Type": "text/plain; charset=utf-8",
+    "Accept": "application/json",
+}
+
 # Varsayılan bbox: mevcut test koridorunun (geometry.py) etrafında biraz
 # geniş bir kutu (south, west, north, east). Gerekirse --bbox ile değiştir.
 DEFAULT_BBOX = (41.20, 36.20, 41.40, 36.50)
@@ -69,8 +78,16 @@ TURKEY_BBOX = (35.80, 25.60, 42.20, 44.90)
 DEFAULT_TILE_SIZE_DEG = 1.5
 
 # Ardışık Overpass isteklerinin arasına konan bekleme (saniye) — public
-# sunucuları aşırı yüklememek için.
-TILE_REQUEST_DELAY_SEC = 1.0
+# sunucuları aşırı yüklememek için (hızlı ardışık istekler timeout'a yol açabiliyor).
+TILE_REQUEST_DELAY_SEC = 2.0
+
+# Sunucu tarafı sorgu zaman aşımı (Overpass query içindeki [timeout:] ile aynı olmalı).
+QUERY_TIMEOUT_SEC = 90
+
+# İki endpoint de başarısız olursa, kısa bir bekleme sonrası tekrar denenecek
+# tur sayısı (geçici ağ/rate-limit sorunlarına karşı).
+MAX_RETRY_PASSES = 2
+RETRY_BACKOFF_SEC = 8
 
 
 def generate_tiles(bbox: tuple, tile_size_deg: float) -> list:
@@ -96,7 +113,7 @@ def generate_tiles(bbox: tuple, tile_size_deg: float) -> list:
 def build_query(bbox):
     south, west, north, east = bbox
     return f"""
-[out:json][timeout:60];
+[out:json][timeout:{QUERY_TIMEOUT_SEC}];
 (
   way["power"="line"]({south},{west},{north},{east});
   way["power"="minor_line"]({south},{west},{north},{east});
@@ -109,14 +126,19 @@ def fetch(bbox):
     query = build_query(bbox)
     data = query.encode("utf-8")
     last_error = None
-    for endpoint in OVERPASS_ENDPOINTS:
-        try:
-            req = urllib.request.Request(endpoint, data=data, method="POST")
-            with urllib.request.urlopen(req, timeout=70) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            last_error = e
-            print(f"[UYARI] {endpoint} başarısız oldu ({e}), diğer endpoint deneniyor...")
+    for attempt in range(1, MAX_RETRY_PASSES + 1):
+        for endpoint in OVERPASS_ENDPOINTS:
+            try:
+                req = urllib.request.Request(endpoint, data=data, method="POST", headers=REQUEST_HEADERS)
+                with urllib.request.urlopen(req, timeout=QUERY_TIMEOUT_SEC + 20) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                last_error = e
+                print(f"[UYARI] {endpoint} başarısız oldu ({e}), diğer endpoint deneniyor...")
+        if attempt < MAX_RETRY_PASSES:
+            print(f"[UYARI] İki endpoint de başarısız oldu, {RETRY_BACKOFF_SEC}sn sonra tekrar denenecek "
+                  f"(deneme {attempt}/{MAX_RETRY_PASSES})...")
+            time.sleep(RETRY_BACKOFF_SEC)
     raise RuntimeError(f"Hiçbir Overpass endpoint'i yanıt vermedi: {last_error}")
 
 
