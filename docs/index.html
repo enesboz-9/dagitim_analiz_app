@@ -212,8 +212,8 @@
 // bu key ile eşleşiyor, yazma/silme yapılamaz.
 // ---------------------------------------------------------------------------
 const CONFIG = {
-  SUPABASE_URL: "https://gusuhktpmaoqaoybfhge.supabase.co",
-  SUPABASE_ANON_KEY: "sb_publishable_A5Labzy3U2u11K_U6OW1nQ_Pp2FdNZH",
+  SUPABASE_URL: "https://YOUR-PROJECT.supabase.co",
+  SUPABASE_ANON_KEY: "YOUR-ANON-PUBLIC-KEY",
 };
 
 const RISK_COLORS = {
@@ -245,10 +245,18 @@ function setStatus(text) {
   statusText.textContent = text;
 }
 
+function toNum(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
 function popupHtml(row) {
   const date = row.measurement_date || "—";
-  const ndvi = row.ndvi_mean !== null && row.ndvi_mean !== undefined ? row.ndvi_mean.toFixed(3) : "—";
-  const cloud = row.cloud_cover_pct !== null && row.cloud_cover_pct !== undefined ? `${row.cloud_cover_pct}%` : "—";
+  const ndviNum = toNum(row.ndvi_mean);
+  const cloudNum = toNum(row.cloud_cover_pct);
+  const ndvi = ndviNum !== null ? ndviNum.toFixed(3) : "—";
+  const cloud = cloudNum !== null ? `${cloudNum}%` : "—";
   return `
     <div class="popup-title">${row.line_name}</div>
     <div class="popup-row"><b>${RISK_LABELS[row.risk_level] || "—"}</b></div>
@@ -274,7 +282,7 @@ function renderList(rows) {
         </div>
       </div>
       <div class="meta mono">
-        <span>NDVI ${row.ndvi_mean !== null && row.ndvi_mean !== undefined ? row.ndvi_mean.toFixed(2) : "—"}</span>
+        <span>NDVI ${(() => { const n = toNum(row.ndvi_mean); return n !== null ? n.toFixed(2) : "—"; })()}</span>
         <span>${row.measurement_date || "veri yok"}</span>
       </div>
     </div>
