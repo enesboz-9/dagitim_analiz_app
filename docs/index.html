@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>YEDAŞ Hat Koridoru — Bitki Örtüsü Risk Haritası</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --bg: #0E1412;
+    --panel: #161E1B;
+    --panel-2: #1C2521;
+    --border: #26302B;
+    --text: #E7ECE9;
+    --muted: #8CA096;
+    --risk-high: #E5484D;
+    --risk-medium: #F0A400;
+    --risk-low: #35C97C;
+    --risk-unknown: #5B6B63;
+    --accent: #35C97C;
+  }
+  *{ box-sizing: border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .mono{ font-family: 'IBM Plex Mono', monospace; }
+
+  header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    position: relative;
+    z-index: 2;
+  }
+  header .title-block h1{
+    font-size: 16px;
+    font-weight: 600;
+    margin:0;
+    letter-spacing: 0.01em;
+  }
+  header .title-block p{
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .scan-line{
+    position:absolute;
+    left:0; right:0; top:0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: scan 4s linear infinite;
+    opacity: 0.7;
+  }
+  @media (prefers-reduced-motion: reduce){ .scan-line{ animation: none; } }
+  @keyframes scan{
+    0%{ transform: translateX(-100%); }
+    100%{ transform: translateX(100%); }
+  }
+
+  .status-pill{
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    display:flex; align-items:center; gap:6px;
+  }
+  .dot{ width:7px; height:7px; border-radius:50%; background: var(--accent); }
+
+  main{
+    flex:1;
+    display:flex;
+    min-height:0;
+  }
+  #map{
+    flex:1;
+    background: var(--bg);
+  }
+  aside{
+    width: 340px;
+    flex-shrink:0;
+    border-left: 1px solid var(--border);
+    background: var(--panel);
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+  }
+  .legend{
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .legend h2{
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 10px;
+    font-weight: 600;
+  }
+  .legend-row{
+    display:flex; align-items:center; gap:8px;
+    font-size: 12.5px;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  .swatch{ width:11px; height:11px; border-radius:3px; flex-shrink:0; }
+
+  .list-wrap{
+    flex:1;
+    overflow-y:auto;
+    padding: 6px 0;
+  }
+  .line-card{
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .line-card:hover{ background: var(--panel-2); }
+  .line-card .row1{
+    display:flex; justify-content:space-between; align-items:flex-start; gap:8px;
+  }
+  .line-card .name{
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+  .risk-badge{
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    flex-shrink:0;
+  }
+  .line-card .meta{
+    margin-top: 5px;
+    font-size: 11px;
+    color: var(--muted);
+    display:flex; gap: 12px;
+  }
+  .empty, .error{
+    padding: 24px 18px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .error{ color: var(--risk-high); }
+
+  .leaflet-popup-content-wrapper{
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .leaflet-popup-tip{ background: var(--panel); }
+  .popup-title{ font-weight:600; font-size:13px; margin-bottom:4px; }
+  .popup-row{ font-size: 12px; color: var(--muted); margin-top:2px; }
+  .popup-row b{ color: var(--text); font-weight:500; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="scan-line"></div>
+  <div class="title-block">
+    <h1>YEDAŞ Hat Koridoru İzleme</h1>
+    <p>Sentinel-2 NDVI tabanlı bitki örtüsü yaklaşma riski</p>
+  </div>
+  <div class="status-pill">
+    <span class="dot"></span>
+    <span id="status-text" class="mono">yükleniyor…</span>
+  </div>
+</header>
+
+<main>
+  <div id="map"></div>
+  <aside>
+    <div class="legend">
+      <h2>Risk Seviyesi</h2>
+      <div class="legend-row"><span class="swatch" style="background:var(--risk-high)"></span> Yüksek — NDVI ≥ 0.60</div>
+      <div class="legend-row"><span class="swatch" style="background:var(--risk-medium)"></span> Orta — NDVI 0.35–0.60</div>
+      <div class="legend-row"><span class="swatch" style="background:var(--risk-low)"></span> Düşük — NDVI &lt; 0.35</div>
+      <div class="legend-row"><span class="swatch" style="background:var(--risk-unknown)"></span> Veri yok</div>
+    </div>
+    <div id="list" class="list-wrap">
+      <div class="empty">Hatlar yükleniyor…</div>
+    </div>
+  </aside>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// AYARLAR — Supabase Dashboard → Settings → API sayfasından al
+// SUPABASE_ANON_KEY burada tarayıcıda görünür olması GÜVENLİDİR: sadece
+// okuma izni veren RLS policy'leri (bkz. supabase_view_power_line_risk_status.sql)
+// bu key ile eşleşiyor, yazma/silme yapılamaz.
+// ---------------------------------------------------------------------------
+const CONFIG = {
+  SUPABASE_URL: "https://gusuhktpmaoqaoybfhge.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_A5Labzy3U2u11K_U6OW1nQ_Pp2FdNZH",
+};
+
+const RISK_COLORS = {
+  high: "#E5484D",
+  medium: "#F0A400",
+  low: "#35C97C",
+  unknown: "#5B6B63",
+};
+const RISK_LABELS = {
+  high: "Yüksek risk",
+  medium: "Orta risk",
+  low: "Düşük risk",
+  unknown: "Veri yok",
+};
+const RISK_ORDER = { high: 0, medium: 1, low: 2, unknown: 3 };
+
+const statusText = document.getElementById("status-text");
+const listEl = document.getElementById("list");
+
+const map = L.map("map", { zoomControl: true }).setView([41.29, 36.33], 12);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+  attribution: '&copy; OpenStreetMap &copy; CARTO',
+  maxZoom: 19,
+}).addTo(map);
+
+const layerByLineId = {};
+
+function setStatus(text) {
+  statusText.textContent = text;
+}
+
+function toNum(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
+function popupHtml(row) {
+  const date = row.measurement_date || "—";
+  const ndviNum = toNum(row.ndvi_mean);
+  const cloudNum = toNum(row.cloud_cover_pct);
+  const ndvi = ndviNum !== null ? ndviNum.toFixed(3) : "—";
+  const cloud = cloudNum !== null ? `${cloudNum}%` : "—";
+  return `
+    <div class="popup-title">${row.line_name}</div>
+    <div class="popup-row"><b>${RISK_LABELS[row.risk_level] || "—"}</b></div>
+    <div class="popup-row">NDVI ortalama: <b>${ndvi}</b></div>
+    <div class="popup-row">Son ölçüm: <b>${date}</b></div>
+    <div class="popup-row">Bulut oranı: <b>${cloud}</b></div>
+    <div class="popup-row">Gerilim: <b>${row.voltage_level || "—"}</b></div>
+  `;
+}
+
+function renderList(rows) {
+  if (!rows.length) {
+    listEl.innerHTML = `<div class="empty">Henüz hat kaydı yok. power_lines tablosuna veri eklendiğinde burada görünecek.</div>`;
+    return;
+  }
+  const sorted = [...rows].sort((a, b) => (RISK_ORDER[a.risk_level] ?? 9) - (RISK_ORDER[b.risk_level] ?? 9));
+  listEl.innerHTML = sorted.map(row => `
+    <div class="line-card" data-line-id="${row.line_id}">
+      <div class="row1">
+        <div class="name">${row.line_name}</div>
+        <div class="risk-badge" style="background:${RISK_COLORS[row.risk_level]}22; color:${RISK_COLORS[row.risk_level]}">
+          ${RISK_LABELS[row.risk_level] || "—"}
+        </div>
+      </div>
+      <div class="meta mono">
+        <span>NDVI ${(() => { const n = toNum(row.ndvi_mean); return n !== null ? n.toFixed(2) : "—"; })()}</span>
+        <span>${row.measurement_date || "veri yok"}</span>
+      </div>
+    </div>
+  `).join("");
+
+  listEl.querySelectorAll(".line-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const lineId = card.getAttribute("data-line-id");
+      const layer = layerByLineId[lineId];
+      if (layer) {
+        map.fitBounds(layer.getBounds(), { maxZoom: 15, padding: [40, 40] });
+        layer.openPopup();
+      }
+    });
+  });
+}
+
+function renderMap(rows) {
+  Object.values(layerByLineId).forEach(l => map.removeLayer(l));
+  const allBounds = [];
+
+  rows.forEach(row => {
+    const geojson = row.corridor_geojson || row.line_geojson;
+    if (!geojson) return;
+    const color = RISK_COLORS[row.risk_level] || RISK_COLORS.unknown;
+    const layer = L.geoJSON(geojson, {
+      style: {
+        color: color,
+        weight: 3,
+        fillColor: color,
+        fillOpacity: row.corridor_geojson ? 0.25 : 0,
+      },
+    }).addTo(map);
+    layer.bindPopup(popupHtml(row));
+    layerByLineId[row.line_id] = layer;
+    allBounds.push(layer.getBounds());
+  });
+
+  if (allBounds.length) {
+    const combined = allBounds.reduce((acc, b) => acc.extend(b), allBounds[0]);
+    map.fitBounds(combined, { padding: [40, 40], maxZoom: 14 });
+  }
+}
+
+async function loadData() {
+  if (CONFIG.SUPABASE_URL.includes("YOUR-PROJECT")) {
+    setStatus("yapılandırılmadı");
+    listEl.innerHTML = `<div class="error">CONFIG.SUPABASE_URL / SUPABASE_ANON_KEY henüz ayarlanmadı. index.html içindeki CONFIG bloğunu Supabase Dashboard → Settings → API'daki değerlerle doldur.</div>`;
+    return;
+  }
+
+  setStatus("yükleniyor…");
+  try {
+    const client = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+    const { data, error } = await client.from("power_line_risk_status").select("*");
+    if (error) throw error;
+
+    renderList(data || []);
+    renderMap(data || []);
+    setStatus(`${(data || []).length} hat · güncel`);
+  } catch (err) {
+    console.error(err);
+    setStatus("hata");
+    listEl.innerHTML = `<div class="error">Veri çekilemedi: ${err.message || err}. Supabase URL/anon key doğru mu ve power_line_risk_status view'i oluşturuldu mu kontrol et.</div>`;
+  }
+}
+
+loadData();
+</script>
+</body>
+</html>
