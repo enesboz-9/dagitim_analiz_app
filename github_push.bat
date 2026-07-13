@@ -42,7 +42,7 @@ git add .
 if %errorlevel% neq 0 goto :error
 
 echo [3/6] Commit olusturuluyor...
-git commit -m "Ilk commit: YEDAS NDVI test pipeline"
+git commit -m "YEDAS NDVI test pipeline guncelleme"
 REM Not: Eger degisiklik yoksa (ornegin ikinci calistirmada) commit basarisiz
 REM olabilir, bu normal - devam ediyoruz.
 
@@ -57,8 +57,36 @@ if %errorlevel% neq 0 goto :error
 
 echo [6/6] GitHub'a push ediliyor...
 git push -u origin main
+if %errorlevel% equ 0 goto :success
+
+echo.
+echo [BILGI] Direkt push reddedildi (uzak repoda yerelde olmayan commit'ler var).
+echo         Otomatik olarak uzaktaki gecmisle birlestiriliyor...
+echo         (Cakisma olursa yerel dosyalar tercih edilecek.)
+echo.
+
+git fetch origin
 if %errorlevel% neq 0 goto :error
 
+git merge origin/main --allow-unrelated-histories -X ours --no-edit
+if %errorlevel% neq 0 (
+    echo.
+    echo [UYARI] Otomatik birlestirme basarisiz oldu.
+    echo         Uzaktaki tum icerigin uzerine yazmak icin zorla push
+    echo         deneyecegim. Bu, GitHub'daki mevcut icerigi SILECEK.
+    echo.
+    set /p onay="Devam edilsin mi? (E/H): "
+    if /i not "%onay%"=="E" goto :error
+    git push -u origin main --force
+    if %errorlevel% neq 0 goto :error
+    goto :success
+)
+
+echo [BILGI] Birlestirme tamamlandi, tekrar push deneniyor...
+git push -u origin main
+if %errorlevel% neq 0 goto :error
+
+:success
 echo.
 echo === Basarili! Proje https://github.com/enesboz-9/dagitim_analiz_app adresine yuklendi ===
 echo.
@@ -71,8 +99,8 @@ echo [HATA] Bir adimda sorun olustu. Yukaridaki mesaji kontrol et.
 echo        Sik karsilasilan sorunlar:
 echo        - GitHub kullanici adi/sifre yerine Personal Access Token istenir
 echo          (Settings - Developer settings - Personal access tokens)
-echo        - Repo zaten push edilmisse "push -u origin main" yerine
-echo          "git pull origin main --allow-unrelated-histories" gerekebilir
+echo        - Cakisan dosyalar varsa "git status" ile kontrol edip
+echo          elle "git add" + "git commit" yapman gerekebilir
 echo.
 pause
 exit /b 1
