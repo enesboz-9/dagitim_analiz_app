@@ -146,20 +146,27 @@ def elements_to_feature_collection(elements: list[dict]) -> dict:
     return {"type": "FeatureCollection", "features": features}
 
 
-def filter_elements(elements: list[dict], power_type: str | None, min_voltage: int | None) -> list[dict]:
+def filter_elements(elements: list[dict], power_type: str | None, min_voltage: int | None,
+                     max_voltage: int | None = None, operator_contains: str | None = None) -> list[dict]:
     filtered = []
     for el in elements:
         tags = el.get("tags", {})
         if power_type and tags.get("power") != power_type:
             continue
-        if min_voltage is not None:
+        if operator_contains:
+            haystack = f"{tags.get('operator', '')} {tags.get('name', '')}".lower()
+            if operator_contains.lower() not in haystack:
+                continue
+        if min_voltage is not None or max_voltage is not None:
             raw_voltage = tags.get("voltage", "")
             try:
                 # voltage bazen "154000;380000" gibi birden fazla değer içerebilir; ilkini al
                 voltage_val = int(raw_voltage.split(";")[0])
             except (ValueError, AttributeError):
                 continue  # voltaj bilinmiyorsa ve bir eşik isteniyorsa dışarıda bırak
-            if voltage_val < min_voltage:
+            if min_voltage is not None and voltage_val < min_voltage:
+                continue
+            if max_voltage is not None and voltage_val > max_voltage:
                 continue
         filtered.append(el)
     return filtered
@@ -181,6 +188,14 @@ def main():
     parser.add_argument("--min-voltage", type=int, default=None,
                          help="--output-geojson için: sadece bu voltaj (V) değerine eşit/üstü hatları dahil et "
                               "(voltajı bilinmeyenler otomatik dışarıda bırakılır)")
+    parser.add_argument("--max-voltage", type=int, default=None,
+                         help="--output-geojson için: sadece bu voltaj (V) değerine eşit/altı hatları dahil et "
+                              "(örn. TEİAŞ ileti hatlarını (154kV/380kV) elemek için --max-voltage 36000 kullan; "
+                              "voltajı bilinmeyenler otomatik dışarıda bırakılır)")
+    parser.add_argument("--operator", type=str, default=None,
+                         help="--output-geojson için: sadece operator/name etiketi bu metni içeren hatları dahil et "
+                              "(örn. --operator YEDAŞ). OSM'de operator etiketi olan Türkiye dağıtım hatları azdır, "
+                              "boş sonuç alırsan bu filtreyi kaldırıp elle gözden geçirmen gerekebilir)")
     args = parser.parse_args()
 
     print(f"Overpass'a sorgu gönderiliyor (bbox={args.bbox})...")
@@ -204,9 +219,11 @@ def main():
               f"nokta_sayısı={n_points} isim/operatör={name}")
 
     if args.output_geojson:
-        filtered = filter_elements(elements, args.power_type, args.min_voltage)
+        filtered = filter_elements(elements, args.power_type, args.min_voltage,
+                                    max_voltage=args.max_voltage, operator_contains=args.operator)
         if not filtered:
-            print("\n[HATA] Filtrelerden sonra hiç hat kalmadı. --power-type / --min-voltage değerlerini gözden geçir.")
+            print("\n[HATA] Filtrelerden sonra hiç hat kalmadı. --power-type / --min-voltage / "
+                  "--max-voltage / --operator değerlerini gözden geçir.")
             sys.exit(1)
         fc = elements_to_feature_collection(filtered)
         with open(args.output_geojson, "w", encoding="utf-8") as f:
