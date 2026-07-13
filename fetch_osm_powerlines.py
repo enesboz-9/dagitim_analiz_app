@@ -4,7 +4,7 @@ fetch_osm_powerlines.py
 Overpass API (OpenStreetMap) üzerinden, test koridorunun etrafındaki
 elektrik hatlarını (power=line / power=minor_line) çeker.
 
-İki kullanım şekli var:
+Üç kullanım şekli var:
 
 1) Tek hat / hızlı bakış (eski davranış): sonuçları listeler, --pick ile
    birini seçip geometry.py'deki TEST_LINE_COORDS formatına hazır şekilde
@@ -16,12 +16,20 @@ elektrik hatlarını (power=line / power=minor_line) çeker.
    import_power_lines.py'ye verilebilir, böylece tüm hatlar tek seferde
    power_lines tablosuna aktarılır.
 
+3) Türkiye geneli (--country): tek bir --bbox yerine, Overpass'ın tek
+   sorguda zaman aşımına uğramaması için Türkiye'yi küçük kutucuklara
+   (tile) bölüp her birini ayrı ayrı sorgular, sonuçları birleştirir
+   (aynı hat birden fazla tile'a düşerse id'ye göre tekilleştirilir).
+   YEDAŞ'a özgü veri bulunamadığında "elimizdeki tüm Türkiye hatlarını
+   ekleyelim" senaryosu için kullanılır.
+
 Kullanım:
     python fetch_osm_powerlines.py
     python fetch_osm_powerlines.py --bbox 41.20 36.20 41.40 36.50
     python fetch_osm_powerlines.py --pick 2   # listeden 2 numaralı hattı seç ve coords bastır
     python fetch_osm_powerlines.py --output-geojson osm_lines.geojson
     python fetch_osm_powerlines.py --output-geojson osm_lines.geojson --power-type line --min-voltage 154000
+    python fetch_osm_powerlines.py --country --output-geojson turkiye_hatlari.geojson
 
 Ardından toplu entegrasyon için:
     python import_power_lines.py --input osm_lines.geojson --mode dry-run \\
@@ -38,6 +46,7 @@ iz sürme) geç.
 import argparse
 import json
 import sys
+import time
 import urllib.request
 
 OVERPASS_ENDPOINTS = [
@@ -48,6 +57,40 @@ OVERPASS_ENDPOINTS = [
 # Varsayılan bbox: mevcut test koridorunun (geometry.py) etrafında biraz
 # geniş bir kutu (south, west, north, east). Gerekirse --bbox ile değiştir.
 DEFAULT_BBOX = (41.20, 36.20, 41.40, 36.50)
+
+# Türkiye'nin tamamını kabaca kapsayan dış kutu (south, west, north, east).
+# --country ile kullanılır; kıyıdan biraz taşması sorun değil, Overpass
+# sadece bu kutu içindeki elemanları döner.
+TURKEY_BBOX = (35.80, 25.60, 42.20, 44.90)
+
+# Tek bir Overpass sorgusu tüm Türkiye'yi kapsayacak kadar büyük olursa
+# public sunucularda zaman aşımına uğrar; bu yüzden --country modunda
+# bbox'ı bu boyuttaki (derece) kutucuklara bölüp tek tek sorgularız.
+DEFAULT_TILE_SIZE_DEG = 1.5
+
+# Ardışık Overpass isteklerinin arasına konan bekleme (saniye) — public
+# sunucuları aşırı yüklememek için.
+TILE_REQUEST_DELAY_SEC = 1.0
+
+
+def generate_tiles(bbox: tuple, tile_size_deg: float) -> list:
+    """
+    Verilen dış bbox'ı (south, west, north, east) tile_size_deg boyutunda
+    kare kutucuklara böler, her biri (south, west, north, east) olan bir
+    liste döner.
+    """
+    south, west, north, east = bbox
+    tiles = []
+    lat = south
+    while lat < north:
+        lat_end = min(lat + tile_size_deg, north)
+        lon = west
+        while lon < east:
+            lon_end = min(lon + tile_size_deg, east)
+            tiles.append((lat, lon, lat_end, lon_end))
+            lon = lon_end
+        lat = lat_end
+    return tiles
 
 
 def build_query(bbox):
@@ -75,6 +118,44 @@ def fetch(bbox):
             last_error = e
             print(f"[UYARI] {endpoint} başarısız oldu ({e}), diğer endpoint deneniyor...")
     raise RuntimeError(f"Hiçbir Overpass endpoint'i yanıt vermedi: {last_error}")
+
+
+def fetch_all_tiles(outer_bbox: tuple, tile_size_deg: float) -> list:
+    """
+    outer_bbox'ı tile_size_deg boyutunda kutucuklara bölüp her birini ayrı
+    ayrı sorgular, tüm 'way' elemanlarını id'ye göre tekilleştirip tek bir
+    listede döner. Bir tile başarısız olursa (zaman aşımı, 5xx vb.) o
+    tile'ı atlayıp diğerleriyle devam eder — tüm çalıştırmayı iptal etmez.
+    """
+    tiles = generate_tiles(outer_bbox, tile_size_deg)
+    print(f"Türkiye {len(tiles)} kutucuğa ({tile_size_deg}°x{tile_size_deg}°) bölündü, "
+          f"her biri ayrı ayrı sorgulanacak (bu birkaç dakika sürebilir)...")
+
+    elements_by_id = {}
+    failed_tiles = 0
+    for i, tile in enumerate(tiles):
+        south, west, north, east = tile
+        print(f"  [{i + 1}/{len(tiles)}] bbox=({south:.2f},{west:.2f},{north:.2f},{east:.2f}) sorgulanıyor...", end=" ")
+        try:
+            result = fetch(tile)
+            tile_elements = [el for el in result.get("elements", []) if el.get("type") == "way"]
+            new_count = 0
+            for el in tile_elements:
+                if el["id"] not in elements_by_id:
+                    elements_by_id[el["id"]] = el
+                    new_count += 1
+            print(f"{len(tile_elements)} hat ({new_count} yeni).")
+        except Exception as e:
+            failed_tiles += 1
+            print(f"[HATA] atlanıyor: {e}")
+        if i < len(tiles) - 1:
+            time.sleep(TILE_REQUEST_DELAY_SEC)
+
+    if failed_tiles:
+        print(f"\n[UYARI] {failed_tiles}/{len(tiles)} kutucuk sorgulanamadı (Overpass zaman aşımı/hata). "
+              "Kapsam eksik olabilir; tekrar çalıştırmak bazı kutucukları kurtarabilir.")
+
+    return list(elements_by_id.values())
 
 
 def _voltage_level_label(raw_voltage: str) -> str:
@@ -177,7 +258,13 @@ def main():
     parser.add_argument("--bbox", type=float, nargs=4,
                          metavar=("SOUTH", "WEST", "NORTH", "EAST"),
                          default=DEFAULT_BBOX,
-                         help="Arama kutusu: south west north east (WGS84 derece)")
+                         help="Arama kutusu: south west north east (WGS84 derece). --country verilirse yok sayılır.")
+    parser.add_argument("--country", action="store_true",
+                         help="Tek bir bölge yerine tüm Türkiye'yi tarar (kutucuklara bölerek, bkz. --tile-size). "
+                              "YEDAŞ'a özgü veri bulunamadığında bulunabilen tüm Türkiye hatlarını toplamak için.")
+    parser.add_argument("--tile-size", type=float, default=DEFAULT_TILE_SIZE_DEG,
+                         help=f"--country için kutucuk boyutu (derece). Varsayılan {DEFAULT_TILE_SIZE_DEG}. "
+                              "Zaman aşımı çok oluyorsa küçült (örn. 1.0); daha hızlı bitsin istiyorsan büyüt.")
     parser.add_argument("--pick", type=int, default=None,
                          help="Listeden seçilecek hattın sıra numarası (sonuçları gördükten sonra tekrar çalıştır)")
     parser.add_argument("--output-geojson", type=str, default=None,
@@ -198,25 +285,33 @@ def main():
                               "boş sonuç alırsan bu filtreyi kaldırıp elle gözden geçirmen gerekebilir)")
     args = parser.parse_args()
 
-    print(f"Overpass'a sorgu gönderiliyor (bbox={args.bbox})...")
-    result = fetch(tuple(args.bbox))
-    elements = [el for el in result.get("elements", []) if el.get("type") == "way"]
+    if args.country:
+        elements = fetch_all_tiles(TURKEY_BBOX, args.tile_size)
+    else:
+        print(f"Overpass'a sorgu gönderiliyor (bbox={args.bbox})...")
+        result = fetch(tuple(args.bbox))
+        elements = [el for el in result.get("elements", []) if el.get("type") == "way"]
 
     if not elements:
         print("\nHiç sonuç bulunamadı. Bu bölgede OSM'de haritalanmış power hattı yok görünüyor.")
         print("Öneriler: --bbox ile daha geniş bir alan dene, ya da manuel dijitalleştirmeye geç.")
         sys.exit(0)
 
-    print(f"\n{len(elements)} hat bulundu:\n")
-    for i, el in enumerate(elements):
-        tags = el.get("tags", {})
-        geom = el.get("geometry", [])
-        n_points = len(geom)
-        name = tags.get("name") or tags.get("operator") or "(isimsiz)"
-        power_type = tags.get("power", "?")
-        voltage = tags.get("voltage", "?")
-        print(f"  [{i}] id={el['id']} power={power_type} voltage={voltage} "
-              f"nokta_sayısı={n_points} isim/operatör={name}")
+    print(f"\nToplam {len(elements)} hat bulundu.")
+    if not args.country:
+        print()
+        for i, el in enumerate(elements):
+            tags = el.get("tags", {})
+            geom = el.get("geometry", [])
+            n_points = len(geom)
+            name = tags.get("name") or tags.get("operator") or "(isimsiz)"
+            power_type = tags.get("power", "?")
+            voltage = tags.get("voltage", "?")
+            print(f"  [{i}] id={el['id']} power={power_type} voltage={voltage} "
+                  f"nokta_sayısı={n_points} isim/operatör={name}")
+    elif args.pick is not None:
+        print("[UYARI] --country modunda --pick sıra numarası tile sırasına göre değişebileceğinden "
+              "güvenilir değil; --output-geojson kullan.")
 
     if args.output_geojson:
         filtered = filter_elements(elements, args.power_type, args.min_voltage,
