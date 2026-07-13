@@ -20,7 +20,7 @@
     --risk-high: #E5484D;
     --risk-medium: #F0A400;
     --risk-low: #35C97C;
-    --risk-unknown: #5B6B63;
+    --risk-unknown: #9BB0A6;
     --accent: #35C97C;
   }
   *{ box-sizing: border-box; }
@@ -220,7 +220,7 @@ const RISK_COLORS = {
   high: "#E5484D",
   medium: "#F0A400",
   low: "#35C97C",
-  unknown: "#5B6B63",
+  unknown: "#9BB0A6",
 };
 const RISK_LABELS = {
   high: "Yüksek risk",
@@ -291,34 +291,52 @@ function renderList(rows) {
   listEl.querySelectorAll(".line-card").forEach(card => {
     card.addEventListener("click", () => {
       const lineId = card.getAttribute("data-line-id");
-      const layer = layerByLineId[lineId];
-      if (layer) {
-        map.fitBounds(layer.getBounds(), { maxZoom: 15, padding: [40, 40] });
-        layer.openPopup();
+      const entry = layerByLineId[lineId];
+      if (entry) {
+        map.fitBounds(entry.main.getBounds(), { maxZoom: 15, padding: [40, 40] });
+        entry.main.openPopup();
       }
     });
   });
 }
 
 function renderMap(rows) {
-  Object.values(layerByLineId).forEach(l => map.removeLayer(l));
+  Object.values(layerByLineId).forEach(entry => map.removeLayer(entry.group));
   const allBounds = [];
 
   rows.forEach(row => {
     const geojson = row.corridor_geojson || row.line_geojson;
     if (!geojson) return;
     const color = RISK_COLORS[row.risk_level] || RISK_COLORS.unknown;
-    const layer = L.geoJSON(geojson, {
+    const group = L.layerGroup();
+
+    // Halo (kılıf) katmanı: hattın altına kalın, koyu, yarı saydam bir çizgi
+    // çizerek koyu harita zemininde her rengin (özellikle soluk "veri yok"
+    // grisinin) net görünmesini sağlar.
+    L.geoJSON(geojson, {
+      style: {
+        color: "#000000",
+        weight: 9,
+        opacity: 0.55,
+        fillOpacity: 0,
+      },
+    }).addTo(group);
+
+    const main = L.geoJSON(geojson, {
       style: {
         color: color,
-        weight: 3,
+        weight: 5,
+        opacity: 1,
         fillColor: color,
-        fillOpacity: row.corridor_geojson ? 0.25 : 0,
+        fillOpacity: row.corridor_geojson ? 0.35 : 0,
       },
-    }).addTo(map);
-    layer.bindPopup(popupHtml(row));
-    layerByLineId[row.line_id] = layer;
-    allBounds.push(layer.getBounds());
+    });
+    main.bindPopup(popupHtml(row));
+    main.addTo(group);
+
+    group.addTo(map);
+    layerByLineId[row.line_id] = { group, main };
+    allBounds.push(main.getBounds());
   });
 
   if (allBounds.length) {
