@@ -118,6 +118,50 @@
   }
   .swatch{ width:11px; height:11px; border-radius:3px; flex-shrink:0; }
 
+  .search-box{
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .search-box input{
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-size: 13px;
+    padding: 9px 32px 9px 12px;
+    outline: none;
+  }
+  .search-box input::placeholder{ color: var(--muted); }
+  .search-box input:focus{ border-color: var(--accent); }
+  .search-box .clear-btn{
+    position: absolute;
+    right: 26px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 4px;
+    display: none;
+    line-height: 1;
+  }
+  .search-box .clear-btn:hover{ color: var(--text); }
+  .search-box .clear-btn.visible{ display: block; }
+  .search-hint{
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .risk-badge.unknown-badge{
+    background: color-mix(in srgb, var(--risk-unknown) 15%, transparent);
+    color: var(--risk-unknown);
+  }
+
   .list-wrap{
     flex:1;
     overflow-y:auto;
@@ -170,6 +214,27 @@
   .popup-title{ font-weight:600; font-size:13px; margin-bottom:4px; }
   .popup-row{ font-size: 12px; color: var(--muted); margin-top:2px; }
   .popup-row b{ color: var(--text); font-weight:500; }
+  .popup-query-btn{
+    margin-top: 8px;
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 7px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    letter-spacing: 0.01em;
+  }
+  .popup-query-btn:hover{ background: var(--panel); border-color: var(--accent); }
+  .popup-query-note{
+    margin-top: 5px;
+    font-size: 10.5px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
 
   .focus-control a{
     width: 26px;
@@ -207,6 +272,11 @@
       <div class="legend-row"><span class="swatch" style="background:var(--risk-medium)"></span> Orta — NDVI 0.35–0.60</div>
       <div class="legend-row"><span class="swatch" style="background:var(--risk-low)"></span> Düşük — NDVI &lt; 0.35</div>
       <div class="legend-row"><span class="swatch" style="background:var(--risk-unknown)"></span> Veri yok</div>
+    </div>
+    <div class="search-box">
+      <input id="line-search" type="text" placeholder="Hat adıyla ara… (örn. Kavak Fider 3)" autocomplete="off" />
+      <button id="search-clear" class="clear-btn" title="Aramayı temizle">✕</button>
+      <div id="search-hint" class="search-hint"></div>
     </div>
     <div id="list" class="list-wrap">
       <div class="empty">Hatlar yükleniyor…</div>
@@ -278,6 +348,13 @@ const FocusControl = L.Control.extend({
 map.addControl(new FocusControl());
 
 const layerByLineId = {};
+// line_id -> row: popup'taki "Bu hattı sorgula" butonu ve arama sonuçları
+// için satırın tamamına (external_id, province vb.) hızlı erişim.
+const rowByLineId = {};
+// Arama kutusu her tuş vuruşunda Supabase'e gitmesin diye tüm hatları
+// tek seferde belleğe alıp (loadData sonunda dolduruluyor) client-side
+// filtreliyoruz — 15.000 hat için bile bu anında çalışır.
+let allRowsGlobal = [];
 
 function setStatus(text) {
   statusText.textContent = text;
@@ -289,20 +366,80 @@ function toNum(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+function escapeHtml(str) {
+  return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
 function popupHtml(row) {
   const date = row.measurement_date || "—";
   const ndviNum = toNum(row.ndvi_mean);
   const cloudNum = toNum(row.cloud_cover_pct);
   const ndvi = ndviNum !== null ? ndviNum.toFixed(3) : "—";
   const cloud = cloudNum !== null ? `${cloudNum}%` : "—";
+
+  let queryNote;
+  if (row.external_id) {
+    queryNote = `run_pipeline.py --external-ids ${escapeHtml(row.external_id)}`;
+  } else if (row.province) {
+    queryNote = `external_id yok — run_pipeline.py --province "${escapeHtml(row.province)}" tüm ili sorgular`;
+  } else {
+    queryNote = "external_id / il bilgisi yok — hedefli sorgu üretilemiyor";
+  }
+
   return `
-    <div class="popup-title">${row.line_name}</div>
+    <div class="popup-title">${escapeHtml(row.line_name)}</div>
     <div class="popup-row"><b>${RISK_LABELS[row.risk_level] || "—"}</b></div>
     <div class="popup-row">NDVI ortalama: <b>${ndvi}</b></div>
     <div class="popup-row">Son ölçüm: <b>${date}</b></div>
     <div class="popup-row">Bulut oranı: <b>${cloud}</b></div>
     <div class="popup-row">Gerilim: <b>${row.voltage_level || "—"}</b></div>
+    <button id="query-btn-${row.line_id}" class="popup-query-btn" onclick="copyQueryCommand('${row.line_id}')">
+      📋 Bu hattı sorgula (PowerShell komutunu kopyala)
+    </button>
+    <div class="popup-query-note">${queryNote}</div>
   `;
+}
+
+// Popup'taki "Bu hattı sorgula" butonuna basılınca, hattı hedefleyen
+// run_pipeline.py komutunu panoya kopyalar. NDVI sorgusu Sentinel Hub
+// secret key + Supabase service_role key gerektirdiği için TARAYICIDAN
+// tetiklenemiyor (bkz. db.py); bu yüzden komutu üretip kopyalıyoruz,
+// PowerShell'e yapıştırıp orada çalıştırman yeterli.
+async function copyQueryCommand(lineId) {
+  const row = rowByLineId[lineId];
+  const btn = document.getElementById(`query-btn-${lineId}`);
+  if (!row) return;
+
+  let cmd;
+  if (row.external_id) {
+    cmd = `python run_pipeline.py --external-ids ${row.external_id}`;
+  } else if (row.province) {
+    cmd = `python run_pipeline.py --province "${row.province}"`;
+  } else {
+    cmd = `python run_pipeline.py --all`;
+  }
+
+  try {
+    await navigator.clipboard.writeText(cmd);
+  } catch (e) {
+    // Panoya erişim engellenmişse (http/izin) eski yöntemle dene.
+    const ta = document.createElement("textarea");
+    ta.value = cmd;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e2) { /* sessizce yut */ }
+    document.body.removeChild(ta);
+  }
+
+  if (btn) {
+    const original = btn.textContent;
+    btn.textContent = "✓ Kopyalandı — PowerShell'e yapıştır";
+    setTimeout(() => { btn.textContent = original; }, 2200);
+  }
 }
 
 function renderList(rows) {
@@ -343,14 +480,62 @@ function renderList(rows) {
   listEl.innerHTML = html;
 
   listEl.querySelectorAll(".line-card").forEach(card => {
-    card.addEventListener("click", () => {
-      const lineId = card.getAttribute("data-line-id");
-      const entry = layerByLineId[lineId];
-      if (entry) {
-        map.fitBounds(entry.main.getBounds(), { maxZoom: 15, padding: [40, 40] });
-        entry.main.openPopup();
-      }
-    });
+    card.addEventListener("click", () => focusLine(card.getAttribute("data-line-id")));
+  });
+}
+
+// Haritada ilgili hatta zoom yapar ve popup'ını açar. Hem varsayılan risk
+// listesindeki kartlardan hem arama sonuçlarından hem de doğrudan haritada
+// bir hatta tıklandığında (Leaflet'in kendi click'i) kullanılan ortak yol.
+function focusLine(lineId) {
+  const entry = layerByLineId[lineId];
+  if (!entry) return;
+  map.fitBounds(entry.main.getBounds(), { maxZoom: 15, padding: [40, 40] });
+  entry.main.openPopup();
+}
+
+// Hat adına göre arama sonuçlarını render eder. Varsayılan listeden farklı
+// olarak "veri yok" (henüz NDVI sorgulanmamış) hatları da kapsar — arama
+// yaparken binlerce hattın tamamı hedef olabilmeli, sadece sorgulanmış
+// olanlar değil.
+function renderSearchResults(query) {
+  const q = query.trim().toLocaleLowerCase("tr");
+  const matches = allRowsGlobal
+    .filter(r => (r.line_name || "").toLocaleLowerCase("tr").includes(q))
+    .slice(0, 200); // aşırı geniş eşleşmede kenar çubuğunu kilitlememek için üst sınır
+
+  const hintEl = document.getElementById("search-hint");
+  if (!matches.length) {
+    hintEl.textContent = "Eşleşen hat bulunamadı.";
+    listEl.innerHTML = `<div class="empty">"${escapeHtml(query)}" ile eşleşen hat yok. Hat adını kontrol et ya da baştan birkaç harfle dene.</div>`;
+    return;
+  }
+  hintEl.textContent = matches.length === 200
+    ? "İlk 200 eşleşme gösteriliyor — daha spesifik yaz."
+    : `${matches.length} eşleşme`;
+
+  listEl.innerHTML = matches.map(row => {
+    const hasData = row.risk_level !== "unknown";
+    const badgeClass = hasData ? "" : "unknown-badge";
+    const badgeStyle = hasData ? `style="background:${RISK_COLORS[row.risk_level]}22; color:${RISK_COLORS[row.risk_level]}"` : "";
+    return `
+      <div class="line-card" data-line-id="${row.line_id}">
+        <div class="row1">
+          <div class="name">${escapeHtml(row.line_name)}</div>
+          <div class="risk-badge ${badgeClass}" ${badgeStyle}>
+            ${RISK_LABELS[row.risk_level] || "—"}
+          </div>
+        </div>
+        <div class="meta mono">
+          <span>${escapeHtml(row.province || "il yok")}</span>
+          <span>${row.measurement_date || "veri yok"}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  listEl.querySelectorAll(".line-card").forEach(card => {
+    card.addEventListener("click", () => focusLine(card.getAttribute("data-line-id")));
   });
 }
 
@@ -394,6 +579,7 @@ function renderMap(rows) {
 
     group.addTo(map);
     layerByLineId[row.line_id] = { group, main };
+    rowByLineId[row.line_id] = row;
     allBounds.push(main.getBounds());
   });
 
@@ -435,6 +621,7 @@ async function loadData() {
       from += PAGE_SIZE;
     }
 
+    allRowsGlobal = allRows;
     renderList(allRows);
     renderMap(allRows);
     setStatus(`${allRows.length} hat · güncel`);
@@ -444,6 +631,29 @@ async function loadData() {
     listEl.innerHTML = `<div class="error">Veri çekilemedi: ${err.message || err}. Supabase URL/anon key doğru mu ve power_line_risk_status view'i oluşturuldu mu kontrol et.</div>`;
   }
 }
+
+const searchInput = document.getElementById("line-search");
+const searchClearBtn = document.getElementById("search-clear");
+const searchHintEl = document.getElementById("search-hint");
+
+searchInput.addEventListener("input", () => {
+  const q = searchInput.value;
+  searchClearBtn.classList.toggle("visible", q.length > 0);
+  if (q.trim().length === 0) {
+    searchHintEl.textContent = "";
+    renderList(allRowsGlobal);
+    return;
+  }
+  renderSearchResults(q);
+});
+
+searchClearBtn.addEventListener("click", () => {
+  searchInput.value = "";
+  searchClearBtn.classList.remove("visible");
+  searchHintEl.textContent = "";
+  renderList(allRowsGlobal);
+  searchInput.focus();
+});
 
 loadData();
 </script>
