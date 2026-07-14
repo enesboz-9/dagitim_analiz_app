@@ -1,0 +1,55 @@
+name: NDVI Pipeline (production)
+
+# Pipeline'ı otomatik çalıştırır — Windows'ta manuel çift-tıklamaya gerek kalmaz.
+# Zamanlama: her ayın 1'i, 03:00 UTC (06:00 TR saati). Değiştirmek için
+# aşağıdaki cron ifadesini düzenle: https://crontab.guru
+#
+# ÖNEMLİ — kurulumdan önce GitHub repo'da şu secrets tanımlanmalı:
+#   Settings → Secrets and variables → Actions → New repository secret
+#     SENTINEL_HUB_CLIENT_ID
+#     SENTINEL_HUB_CLIENT_SECRET
+#     SUPABASE_URL
+#     SUPABASE_KEY
+
+on:
+  schedule:
+    - cron: "0 3 1 * *"
+  workflow_dispatch:
+    inputs:
+      months_back:
+        description: "Kaç ay geriye dönük veri çekilsin"
+        required: false
+        default: "6"
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Repo'yu çek
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bağımlılıkları kur
+        run: pip install -r requirements.txt
+
+      - name: Pipeline'ı çalıştır
+        env:
+          SENTINEL_HUB_CLIENT_ID: ${{ secrets.SENTINEL_HUB_CLIENT_ID }}
+          SENTINEL_HUB_CLIENT_SECRET: ${{ secrets.SENTINEL_HUB_CLIENT_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python run_pipeline.py --months-back "${{ github.event.inputs.months_back || '6' }}" --log-file pipeline.log
+
+      - name: Log dosyasını sakla (hata ayıklama için)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-log
+          path: pipeline.log
+          retention-days: 30
