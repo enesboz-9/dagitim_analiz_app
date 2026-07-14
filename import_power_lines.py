@@ -100,10 +100,10 @@ def load_features(input_path: str, name_field: str, external_id_field: str,
             print(f"[UYARI] feature[{i}]: geometry yok, atlanıyor.")
             continue
 
-        base_name = props.get(name_field) or f"YEDAŞ Hattı {i}"
-        base_external_id = props.get(external_id_field) or f"import-{i}"
-        province = props.get(province_field) or default_province
-        voltage_level = props.get(voltage_field) or default_voltage
+        base_name = str(props.get(name_field) or f"YEDAŞ Hattı {i}")
+        base_external_id = str(props.get(external_id_field) or f"import-{i}")
+        province = str(props.get(province_field) or default_province)
+        voltage_level = str(props.get(voltage_field) or default_voltage)
 
         try:
             parts = list(_iter_line_coords(geometry))
