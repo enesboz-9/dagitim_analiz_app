@@ -162,6 +162,68 @@
     color: var(--risk-unknown);
   }
 
+  .last-query-panel{
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .last-query-panel h2{
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 10px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .last-query-refresh{
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    cursor: pointer;
+    padding: 0;
+  }
+  .last-query-refresh:hover{ text-decoration: underline; }
+  .last-query-refresh:disabled{ color: var(--muted); cursor: default; text-decoration: none; }
+  .last-query-empty{
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .last-query-card{
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+  }
+  .last-query-card:hover{ border-color: var(--accent); }
+  .last-query-card .name{
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 6px;
+  }
+  .last-query-card .meta{
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .last-query-card .meta b{ color: var(--text); font-weight: 500; }
+  .last-query-card .queried-at{
+    margin-top: 8px;
+    font-size: 10.5px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
+  }
+
   .list-wrap{
     flex:1;
     overflow-y:auto;
@@ -273,6 +335,15 @@
       <div class="legend-row"><span class="swatch" style="background:var(--risk-low)"></span> Düşük — NDVI &lt; 0.35</div>
       <div class="legend-row"><span class="swatch" style="background:var(--risk-unknown)"></span> Veri yok</div>
     </div>
+    <div class="last-query-panel">
+      <h2>
+        Son Sorgulanan Hat
+        <button id="last-query-refresh" class="last-query-refresh" title="Supabase'den güncel veriyi çek">Yenile</button>
+      </h2>
+      <div id="last-query-body">
+        <div class="last-query-empty">Henüz bir hat sorgulanmadı. Haritada bir hatta tıklayıp "Bu hattı sorgula" butonuna bastığında burada görünecek.</div>
+      </div>
+    </div>
     <div class="search-box">
       <input id="line-search" type="text" placeholder="Hat adıyla ara… (örn. Kavak Fider 3)" autocomplete="off" />
       <button id="search-clear" class="clear-btn" title="Aramayı temizle">✕</button>
@@ -355,6 +426,27 @@ const rowByLineId = {};
 // tek seferde belleğe alıp (loadData sonunda dolduruluyor) client-side
 // filtreliyoruz — 15.000 hat için bile bu anında çalışır.
 let allRowsGlobal = [];
+// Supabase client'ı loadData içinde bir kez oluşturup burada tutuyoruz ki
+// "Yenile" butonu tüm 15.000 satırı yeniden çekmeden tek bir hattı
+// sorgulayabilsin.
+let supabaseClient = null;
+
+const LAST_QUERY_KEY = "yedas_last_queried_line_id";
+const LAST_QUERY_TIME_KEY = "yedas_last_queried_at";
+
+function getLastQueriedLineId() {
+  return localStorage.getItem(LAST_QUERY_KEY);
+}
+
+// Bir hat için "Bu hattı sorgula" butonuna basıldığında çağrılır. Gerçek
+// NDVI sorgusu PowerShell'de run_pipeline.py ile yapılıyor (bkz.
+// copyQueryCommand); burada sadece "en son hangi hat hedeflendi" bilgisini
+// tarayıcıda saklıyoruz ki sayfa yeniden açıldığında bile panel hatırlasın.
+function setLastQueriedLine(lineId) {
+  localStorage.setItem(LAST_QUERY_KEY, lineId);
+  localStorage.setItem(LAST_QUERY_TIME_KEY, new Date().toISOString());
+  renderLastQueryPanel();
+}
 
 function setStatus(text) {
   statusText.textContent = text;
@@ -440,6 +532,8 @@ async function copyQueryCommand(lineId) {
     btn.textContent = "✓ Kopyalandı — PowerShell'e yapıştır";
     setTimeout(() => { btn.textContent = original; }, 2200);
   }
+
+  setLastQueriedLine(lineId);
 }
 
 function renderList(rows) {
@@ -539,6 +633,107 @@ function renderSearchResults(query) {
   });
 }
 
+// Sidebar'daki "Son Sorgulanan Hat" panelini localStorage'daki lineId'ye
+// göre günceller. Sayfa ilk yüklendiğinde ve her sorgu/yenileme sonrasında
+// çağrılıyor.
+function renderLastQueryPanel() {
+  const bodyEl = document.getElementById("last-query-body");
+  const refreshBtn = document.getElementById("last-query-refresh");
+  const lineId = getLastQueriedLineId();
+
+  if (!lineId) {
+    bodyEl.innerHTML = `<div class="last-query-empty">Henüz bir hat sorgulanmadı. Haritada bir hatta tıklayıp "Bu hattı sorgula" butonuna bastığında burada görünecek.</div>`;
+    refreshBtn.style.display = "none";
+    return;
+  }
+
+  const row = rowByLineId[lineId];
+  refreshBtn.style.display = "inline";
+
+  if (!row) {
+    bodyEl.innerHTML = `<div class="last-query-empty">Sorgulanan hat (${escapeHtml(lineId)}) şu anki veri setinde bulunamadı. "Yenile"ye basarak Supabase'den tekrar çekmeyi dene.</div>`;
+    return;
+  }
+
+  const queriedAtRaw = localStorage.getItem(LAST_QUERY_TIME_KEY);
+  const queriedAt = queriedAtRaw
+    ? new Date(queriedAtRaw).toLocaleString("tr-TR")
+    : null;
+  const ndviNum = toNum(row.ndvi_mean);
+  const ndvi = ndviNum !== null ? ndviNum.toFixed(3) : "—";
+  const hasData = row.risk_level !== "unknown";
+  const badgeClass = hasData ? "" : "unknown-badge";
+  const badgeStyle = hasData ? `style="background:${RISK_COLORS[row.risk_level]}22; color:${RISK_COLORS[row.risk_level]}"` : "";
+
+  bodyEl.innerHTML = `
+    <div class="last-query-card" id="last-query-card">
+      <div class="name">${escapeHtml(row.line_name)}</div>
+      <div class="meta">
+        <span>Risk: <b class="risk-badge ${badgeClass}" ${badgeStyle}>${RISK_LABELS[row.risk_level] || "—"}</b></span>
+        <span>NDVI ortalama: <b>${ndvi}</b></span>
+        <span>Son ölçüm: <b>${row.measurement_date || "veri yok"}</b></span>
+        <span>İl: <b>${escapeHtml(row.province || "—")}</b></span>
+      </div>
+      ${queriedAt ? `<div class="queried-at">PowerShell komutu ${escapeHtml(queriedAt)} tarihinde kopyalandı</div>` : ""}
+    </div>
+  `;
+
+  document.getElementById("last-query-card").addEventListener("click", () => focusLine(lineId));
+}
+
+// "Yenile" butonu: tüm 15.000 satırı yeniden çekmek yerine sadece son
+// sorgulanan tek hattı Supabase'den tazeler. PowerShell'de run_pipeline.py
+// çalıştırıp Supabase'e yeni NDVI verisi yazdıktan sonra buraya dönüp
+// yenile'ye basman yeterli — sayfayı komple yenilemene gerek yok.
+async function refreshLastQueriedLine() {
+  const lineId = getLastQueriedLineId();
+  if (!lineId || !supabaseClient) return;
+
+  const refreshBtn = document.getElementById("last-query-refresh");
+  const original = refreshBtn.textContent;
+  refreshBtn.textContent = "Yenileniyor…";
+  refreshBtn.disabled = true;
+
+  try {
+    const { data, error } = await supabaseClient
+      .from("power_line_risk_status")
+      .select("*")
+      .eq("line_id", lineId)
+      .maybeSingle();
+    if (error) throw error;
+
+    if (data) {
+      rowByLineId[lineId] = data;
+      const idx = allRowsGlobal.findIndex(r => r.line_id === lineId);
+      if (idx !== -1) allRowsGlobal[idx] = data;
+
+      // Haritadaki çizginin rengini/popup içeriğini de güncelle, böylece
+      // yeni risk seviyesi hem panelde hem haritada tutarlı görünür.
+      const entry = layerByLineId[lineId];
+      if (entry) {
+        const color = RISK_COLORS[data.risk_level] || RISK_COLORS.unknown;
+        const hasData = data.risk_level !== "unknown";
+        entry.main.setStyle({
+          color,
+          weight: hasData ? 5 : 2,
+          opacity: hasData ? 1 : 0.6,
+          fillColor: color,
+          fillOpacity: data.corridor_geojson ? 0.35 : 0,
+        });
+        entry.main.setPopupContent(popupHtml(data));
+      }
+    }
+    renderLastQueryPanel();
+  } catch (err) {
+    console.error(err);
+    const bodyEl = document.getElementById("last-query-body");
+    bodyEl.innerHTML = `<div class="error">Yenileme başarısız: ${escapeHtml(err.message || String(err))}</div>`;
+  } finally {
+    refreshBtn.textContent = original;
+    refreshBtn.disabled = false;
+  }
+}
+
 function renderMap(rows) {
   Object.values(layerByLineId).forEach(entry => map.removeLayer(entry.group));
   const allBounds = [];
@@ -602,6 +797,7 @@ async function loadData() {
   setStatus("yükleniyor…");
   try {
     const client = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+    supabaseClient = client;
 
     // Supabase/PostgREST tek istekte en fazla 1000 satır döner. Türkiye
     // genelinde binlerce hat olduğu için .range() ile sayfalayarak TÜM
@@ -624,6 +820,7 @@ async function loadData() {
     allRowsGlobal = allRows;
     renderList(allRows);
     renderMap(allRows);
+    renderLastQueryPanel();
     setStatus(`${allRows.length} hat · güncel`);
   } catch (err) {
     console.error(err);
@@ -654,6 +851,8 @@ searchClearBtn.addEventListener("click", () => {
   renderList(allRowsGlobal);
   searchInput.focus();
 });
+
+document.getElementById("last-query-refresh").addEventListener("click", refreshLastQueriedLine);
 
 loadData();
 </script>
