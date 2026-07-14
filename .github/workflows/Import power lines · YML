@@ -1,0 +1,78 @@
+name: Power Lines Import (manuel)
+
+# GitHub Pages sadece docs/index.html'i (statik frontend) sunar; Supabase'e
+# veri YAZMAZ, sadece anon key ile okur. power_lines tablosunu doldurmak
+# için import_power_lines.py'nin bir yerde (yerel makine ya da burada,
+# GitHub Actions'ta) çalışması gerekir. Bu workflow, yerel Python kurmadan
+# aynı işi GitHub üzerinden yapman için var.
+#
+# KULLANIM:
+#   1) turkiye_hatlari.geojson dosyasını repo'ya commit'le (ör. repo
+#      kök dizinine, docs/ altına koymana gerek yok):
+#        git add turkiye_hatlari.geojson
+#        git commit -m "OSM hat verisi"
+#        git push
+#   2) GitHub'da repo -> Actions sekmesi -> "Power Lines Import (manuel)"
+#      -> "Run workflow" butonuna bas, aşağıdaki input'ları doldur.
+#
+# ÖNKOŞUL (Supabase SQL Editor'da bir kez, önceden çalıştırılmış olmalı):
+#   - supabase_add_external_id.sql
+#   - supabase_rpc_upsert_power_line.sql
+# ÖNKOŞUL (repo Settings -> Secrets and variables -> Actions):
+#   - SUPABASE_URL, SUPABASE_KEY (ndvi-pipeline.yml zaten bunları kullanıyorsa
+#     ekstra bir şey yapmana gerek yok; SUPABASE_KEY service_role key olmalı,
+#     anon key değil, çünkü power_lines'a INSERT/UPDATE yapılıyor)
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_file:
+        description: "Repo içindeki GeoJSON dosya yolu"
+        required: false
+        default: "turkiye_hatlari.geojson"
+      mode:
+        description: "dry-run: sadece özet göster (Supabase'e yazmaz) | rpc: gerçek yazım"
+        required: false
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - rpc
+      buffer_meters:
+        description: "Emniyet mesafesi zarfı genişliği (metre)"
+        required: false
+        default: "20"
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Repo'yu çek
+        uses: actions/checkout@v4
+
+      - name: Python kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bağımlılıkları kur
+        run: pip install -r requirements.txt
+
+      - name: Dosya var mı kontrol et
+        run: |
+          if [ ! -f "${{ github.event.inputs.input_file }}" ]; then
+            echo "::error::${{ github.event.inputs.input_file }} repo içinde bulunamadı. Önce dosyayı commit'leyip push ettiğinden emin ol."
+            exit 1
+          fi
+
+      - name: Import'u çalıştır
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python import_power_lines.py \
+            --input "${{ github.event.inputs.input_file }}" \
+            --mode "${{ github.event.inputs.mode }}" \
+            --name-field name --external-id-field id --voltage-field voltage_level \
+            --buffer-meters "${{ github.event.inputs.buffer_meters }}"
