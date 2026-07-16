@@ -55,6 +55,7 @@ import json
 import sys
 
 from geometry import build_corridor
+from turkey_provinces import detect_province_for_line
 
 
 def _iter_line_coords(geometry: dict):
@@ -102,7 +103,7 @@ def load_features(input_path: str, name_field: str, external_id_field: str,
 
         base_name = str(props.get(name_field) or f"YEDAŞ Hattı {i}")
         base_external_id = str(props.get(external_id_field) or f"import-{i}")
-        province = str(props.get(province_field) or default_province)
+        province_from_props = props.get(province_field)
         voltage_level = str(props.get(voltage_field) or default_voltage)
 
         try:
@@ -117,6 +118,22 @@ def load_features(input_path: str, name_field: str, external_id_field: str,
                 skipped += 1
                 print(f"[UYARI] feature[{i}] parça[{j}] ({base_name}): 2'den az nokta, atlanıyor.")
                 continue
+
+            # İl bilgisi GeoJSON property'sinde varsa onu kullan (kaynak veri
+            # genelde doğrudur). Yoksa (örn. OSM'den çekilen veri, il tag'i
+            # taşımıyor) --province default'unu KÖRÜ KÖRÜNE kullanmak yerine
+            # hattın kendi koordinatlarından gerçek ili otomatik tespit et.
+            # Bu, önceki bir hatanın (nationwide OSM import'ta tüm hatların
+            # yanlışlıkla tek bir default ile etiketlenmesi) tekrarını önler.
+            if province_from_props:
+                province = str(province_from_props)
+            else:
+                detected, exact = detect_province_for_line([(x, y) for x, y, *_ in coords])
+                province = detected or default_province
+                if detected and not exact:
+                    print(f"[NOT] feature[{i}] parça[{j}] ({base_name}): il tahmini "
+                          f"belirlendi ({province}, sınır/kıyı bölgesi olabilir, kontrol et).")
+
             suffix = "" if len(parts) == 1 else f" (parça {j + 1}/{len(parts)})"
             records.append({
                 "external_id": base_external_id if len(parts) == 1 else f"{base_external_id}-{j}",
@@ -220,7 +237,8 @@ def main():
     parser.add_argument("--external-id-field", default="id", help="Kararlı dış kimlik için GeoJSON property anahtarı")
     parser.add_argument("--province-field", default="province", help="İl için GeoJSON property anahtarı")
     parser.add_argument("--voltage-field", default="voltage_level", help="Gerilim seviyesi için GeoJSON property anahtarı")
-    parser.add_argument("--province", default="Samsun", help="property'de bulunamazsa kullanılacak varsayılan il")
+    parser.add_argument("--province", default="Bilinmiyor",
+                         help="property'de bulunamadığında VE geometriden otomatik il tespiti de başarısız olduğunda kullanılacak son çare varsayılan (normalde hiç devreye girmemeli)")
     parser.add_argument("--voltage-level", default="OG", help="property'de bulunamazsa kullanılacak varsayılan gerilim seviyesi")
     args = parser.parse_args()
 
