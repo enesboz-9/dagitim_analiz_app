@@ -197,7 +197,40 @@ döner ve harita "0 hat" gösterir — bu bir hata değil, henüz veri
 aktarılmadığının göstergesidir. Yukarıdaki 2. adımı tamamladığında hatlar
 görünmeye başlar.
 
-## Yayına alma (production)
+## İl (province) bilgisi yanlış görünüyorsa (Türkiye geneli import sonrası)
+
+`fetch_osm_powerlines.py --country` ile çekilen OSM verisinde hatların il
+bilgisi YOK. Daha önce `import_power_lines.py --province` default'u
+"Samsun" olduğu için, Türkiye genelinde import edilmiş hatların province
+kolonu gerçek konumdan bağımsız olarak "Samsun" yazılmış olabilir. Bunu
+düzeltmek için:
+
+1. **Önce dry-run** (veritabanına dokunmaz, sadece kaç hat etkilenecek
+   ve hangi illere düzeltileceğini gösterir):
+   ```bash
+   python fix_line_provinces.py --dry-run
+   ```
+2. **SQL dosyalarını üret** (15.000 hat, Supabase SQL Editor'ı
+   zorlamaması için varsayılan olarak 2000'erli parçalara bölünür —
+   `split_sql.py` ile yaptığın chunking mantığının aynısı):
+   ```bash
+   python fix_line_provinces.py --mode sql --chunk-size 2000
+   ```
+3. Üretilen `fix_line_provinces_0001.sql`, `fix_line_provinces_0002.sql`, ...
+   dosyalarının içeriğini **sırayla** Supabase SQL Editor'da çalıştır.
+
+Bu düzeltme, hattın kendi koordinatlarını gerçek il sınırlarına
+(`turkiye_il_sinirlari.geojson`, 81 il) karşı nokta-poligon testiyle
+kontrol ederek yapılır (bkz. `turkey_provinces.py`). Kıyı/ada gibi sınır
+bölgelerindeki hatlar "tahmini" olarak işaretlenir, SQL dosyasında
+yanlarında bir uyarı yorumu bulunur.
+
+`import_power_lines.py` da güncellendi: property'de il bilgisi
+bulunamadığında artık körü körüne "Samsun" yazmak yerine, hattın
+geometrisinden otomatik il tespiti yapıyor — bu hata gelecekteki
+import'larda tekrarlanmayacak.
+
+
 
 `run_test.py` tek bir hattı manuel olarak (`--line-id` ile) test etmek
 içindir. Gerçek üretimde tüm hatların otomatik ve periyodik olarak
