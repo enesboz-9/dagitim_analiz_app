@@ -738,7 +738,6 @@ function lastQueryCardHtml(lineId, queriedAtRaw, row) {
         <span>Risk: <b class="risk-badge ${badgeClass}" ${badgeStyle}>${RISK_LABELS[row.risk_level] || "—"}</b></span>
         <span>NDVI ortalama: <b>${ndvi}</b></span>
         <span>Son ölçüm: <b>${row.measurement_date || "veri yok"}</b></span>
-        <span>İl: <b>${escapeHtml(row.province || "—")}</b></span>
       </div>
       ${queriedAt ? `<div class="queried-at">PowerShell komutu ${escapeHtml(queriedAt)} tarihinde kopyalandı</div>` : ""}
     </div>
