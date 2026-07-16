@@ -367,6 +367,15 @@
 const CONFIG = {
   SUPABASE_URL: "https://gusuhktpmaoqaoybfhge.supabase.co",
   SUPABASE_ANON_KEY: "sb_publishable_A5Labzy3U2u11K_U6OW1nQ_Pp2FdNZH",
+  // "Bu hattı sorgula" butonuyla kopyalanan PowerShell komutunun doğrudan
+  // çalışabilmesi için run_pipeline.py'nin bilgisayarındaki tam klasör
+  // yolu. Boş bırakırsan komut sadece "python run_pipeline.py ..." olarak
+  // kopyalanır ve PowerShell'de önce elle o klasöre gitmen (cd) gerekir.
+  // Doldurursan komut otomatik olarak "cd '<yol>'; python run_pipeline.py ..."
+  // şeklinde kopyalanır, PowerShell'de sadece yapıştırıp Enter'a basman
+  // yeterli olur. Windows yolunu ters bölü işaretiyle (\) yaz, örnek:
+  // "C:\\Users\\Enes\\Projects\\dagitim_analiz_app"
+  LOCAL_PROJECT_PATH: "",
 };
 
 const RISK_COLORS = {
@@ -479,6 +488,11 @@ function popupHtml(row) {
   } else {
     queryNote = "external_id / il bilgisi yok — hedefli sorgu üretilemiyor";
   }
+  if (CONFIG.LOCAL_PROJECT_PATH) {
+    queryNote = `cd '${escapeHtml(CONFIG.LOCAL_PROJECT_PATH)}'; ${queryNote}`;
+  } else {
+    queryNote += " (klasöre elle cd yapman gerekir — CONFIG.LOCAL_PROJECT_PATH boş)";
+  }
 
   return `
     <div class="popup-title">${escapeHtml(row.line_name)}</div>
@@ -511,6 +525,15 @@ async function copyQueryCommand(lineId) {
     cmd = `python run_pipeline.py --province "${row.province}"`;
   } else {
     cmd = `python run_pipeline.py --all`;
+  }
+
+  // CONFIG.LOCAL_PROJECT_PATH doldurulduysa, komutun başına o klasöre
+  // geçen bir "cd" ekliyoruz — böylece kopyalanan komut PowerShell'e
+  // yapıştırılıp doğrudan çalıştırılabilir, önce elle klasöre gitmeye
+  // gerek kalmaz. PowerShell'de aynı satırda birden fazla komut ";" ile
+  // ayrılır (cmd.exe'deki "&&" değil).
+  if (CONFIG.LOCAL_PROJECT_PATH) {
+    cmd = `cd '${CONFIG.LOCAL_PROJECT_PATH}'; ${cmd}`;
   }
 
   try {
