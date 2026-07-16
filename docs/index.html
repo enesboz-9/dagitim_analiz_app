@@ -177,6 +177,32 @@
     align-items: center;
     justify-content: space-between;
   }
+  .last-query-header-right{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .live-indicator{
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--risk-low);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 600;
+  }
+  .live-dot{
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--risk-low);
+    animation: live-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes live-pulse{
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.7); }
+  }
   .last-query-refresh{
     background: none;
     border: none;
@@ -190,6 +216,13 @@
   }
   .last-query-refresh:hover{ text-decoration: underline; }
   .last-query-refresh:disabled{ color: var(--muted); cursor: default; text-decoration: none; }
+  .last-query-card.just-updated{
+    animation: just-updated-flash 2.2s ease-out;
+  }
+  @keyframes just-updated-flash{
+    0% { border-color: var(--risk-low); box-shadow: 0 0 0 1px var(--risk-low); }
+    100% { border-color: var(--border); box-shadow: none; }
+  }
   .last-query-empty{
     font-size: 12px;
     color: var(--muted);
@@ -343,7 +376,12 @@
     <div class="last-query-panel">
       <h2>
         Son Sorgulanan Hatlar
-        <button id="last-query-refresh" class="last-query-refresh" title="Supabase'den güncel veriyi çek">Yenile</button>
+        <span class="last-query-header-right">
+          <span id="live-indicator" class="live-indicator" style="display:none" title="Yeni veri için arkada otomatik kontrol ediliyor">
+            <span class="live-dot"></span>canlı
+          </span>
+          <button id="last-query-refresh" class="last-query-refresh" title="Şimdi kontrol et">Yenile</button>
+        </span>
       </h2>
       <div id="last-query-body">
         <div class="last-query-empty">Henüz bir hat sorgulanmadı. Haritada bir hatta tıklayıp "Bu hattı sorgula" butonuna bastığında burada görünecek.</div>
@@ -718,6 +756,7 @@ function renderLastQueryPanel() {
   if (!entries.length) {
     bodyEl.innerHTML = `<div class="last-query-empty">Henüz bir hat sorgulanmadı. Haritada bir hatta tıklayıp "Bu hattı sorgula" butonuna bastığında burada görünecek.</div>`;
     refreshBtn.style.display = "none";
+    ensureAutoRefreshRunning();
     return;
   }
 
@@ -729,21 +768,64 @@ function renderLastQueryPanel() {
   bodyEl.querySelectorAll(".last-query-card[data-line-id]").forEach(card => {
     card.addEventListener("click", () => focusLine(card.getAttribute("data-line-id")));
   });
+
+  ensureAutoRefreshRunning();
 }
 
-// "Yenile" butonu: tüm 15.000 satırı yeniden çekmek yerine sadece son
-// sorgulanan (en fazla 3) hattı Supabase'den tazeler. PowerShell'de
-// run_pipeline.py çalıştırıp Supabase'e yeni NDVI verisi yazdıktan sonra
-// buraya dönüp yenile'ye basman yeterli — sayfayı komple yenilemene gerek
-// yok.
-async function refreshLastQueriedLine() {
+// PowerShell'de run_pipeline.py'nin ne zaman bittiğini bilmediğimiz için,
+// "Bu hattı sorgula" ile hedeflenen hatları arka planda periyodik olarak
+// (AUTO_REFRESH_INTERVAL_MS'de bir) sessizce kontrol ediyoruz. Böylece
+// yeni NDVI verisi Supabase'e yazılır yazılmaz — sayfayı elle yenilemene
+// ya da "Yenile"ye basmana gerek kalmadan — birkaç saniye içinde hem
+// panelde hem haritada kendiliğinden görünür.
+const AUTO_REFRESH_INTERVAL_MS = 15000;
+let autoRefreshTimer = null;
+
+function ensureAutoRefreshRunning() {
+  const hasEntries = getLastQueriedLines().length > 0;
+  const indicator = document.getElementById("live-indicator");
+  if (indicator) indicator.style.display = hasEntries ? "flex" : "none";
+
+  if (hasEntries && !autoRefreshTimer) {
+    autoRefreshTimer = setInterval(() => {
+      checkForLastQueriedUpdates(true);
+    }, AUTO_REFRESH_INTERVAL_MS);
+  } else if (!hasEntries && autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+}
+
+// Sekme arka plandayken gereksiz Supabase isteği atmamak için, sekme
+// tekrar görünür olduğunda hemen bir kontrol tetikliyoruz (kullanıcı
+// PowerShell'den dönüp sekmeye geri geldiğinde en güncel hali görsün diye)
+// ve sekme arka plandayken interval'i durdurup öne gelince yeniden başlatıyoruz.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    checkForLastQueriedUpdates(true);
+    ensureAutoRefreshRunning();
+  } else if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+});
+
+// Hem "Yenile" butonu (silent=false, buton üzerinde "Yenileniyor…" durumu
+// gösterir) hem de otomatik arka plan takibi (silent=true, sessizce
+// çalışır) tarafından kullanılan ortak fonksiyon. Tüm 15.000 satırı
+// yeniden çekmek yerine sadece son sorgulanan (en fazla 3) hattı
+// Supabase'den tazeler.
+async function checkForLastQueriedUpdates(silent) {
   const entries = getLastQueriedLines();
   if (!entries.length || !supabaseClient) return;
 
   const refreshBtn = document.getElementById("last-query-refresh");
-  const original = refreshBtn.textContent;
-  refreshBtn.textContent = "Yenileniyor…";
-  refreshBtn.disabled = true;
+  let originalBtnText;
+  if (!silent) {
+    originalBtnText = refreshBtn.textContent;
+    refreshBtn.textContent = "Yenileniyor…";
+    refreshBtn.disabled = true;
+  }
 
   try {
     const lineIds = entries.map(e => e.lineId);
@@ -753,7 +835,17 @@ async function refreshLastQueriedLine() {
       .in("line_id", lineIds);
     if (error) throw error;
 
+    const changedLineIds = [];
+
     (data || []).forEach(row => {
+      const previous = rowByLineId[row.line_id];
+      const changed = previous && (
+        previous.ndvi_mean !== row.ndvi_mean ||
+        previous.measurement_date !== row.measurement_date ||
+        previous.risk_level !== row.risk_level
+      );
+      if (changed) changedLineIds.push(row.line_id);
+
       rowByLineId[row.line_id] = row;
       const idx = allRowsGlobal.findIndex(r => r.line_id === row.line_id);
       if (idx !== -1) allRowsGlobal[idx] = row;
@@ -774,15 +866,38 @@ async function refreshLastQueriedLine() {
         entry.main.setPopupContent(popupHtml(row));
       }
     });
+
     renderLastQueryPanel();
+
+    // Yeni veri gelen kartları kısa süreliğine yeşil çerçeveyle vurgula —
+    // sayfa hiç yenilenmediği için "az önce değişti" fark edilsin diye.
+    changedLineIds.forEach(lineId => {
+      const card = document.querySelector(`.last-query-card[data-line-id="${lineId}"]`);
+      if (card) {
+        card.classList.add("just-updated");
+        setTimeout(() => card.classList.remove("just-updated"), 2200);
+      }
+    });
+
+    if (changedLineIds.length) {
+      setStatus(`${changedLineIds.length} hat için yeni sorgu verisi geldi · ${new Date().toLocaleTimeString("tr-TR")}`);
+    }
   } catch (err) {
     console.error(err);
-    const bodyEl = document.getElementById("last-query-body");
-    bodyEl.innerHTML = `<div class="error">Yenileme başarısız: ${escapeHtml(err.message || String(err))}</div>`;
+    if (!silent) {
+      const bodyEl = document.getElementById("last-query-body");
+      bodyEl.innerHTML = `<div class="error">Yenileme başarısız: ${escapeHtml(err.message || String(err))}</div>`;
+    }
   } finally {
-    refreshBtn.textContent = original;
-    refreshBtn.disabled = false;
+    if (!silent) {
+      refreshBtn.textContent = originalBtnText;
+      refreshBtn.disabled = false;
+    }
   }
+}
+
+async function refreshLastQueriedLine() {
+  await checkForLastQueriedUpdates(false);
 }
 
 function renderMap(rows) {
