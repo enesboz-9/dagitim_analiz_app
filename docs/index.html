@@ -335,6 +335,42 @@
     color: var(--muted);
     line-height: 1.4;
   }
+  .popup-history{
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--border);
+  }
+  .popup-history-title{
+    font-size: 10.5px;
+    color: var(--muted);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+  .popup-history-list{
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .popup-history-list li{
+    font-size: 11px;
+    color: var(--text);
+    padding: 1px 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .popup-history-list li::before{
+    content: "";
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+  }
+  .popup-history-list li:first-child{ color: var(--text); font-weight: 500; }
+  .popup-history-list li:not(:first-child){ color: var(--muted); }
 
   .focus-control a{
     width: 26px;
@@ -516,6 +552,43 @@ function setLastQueriedLine(lineId) {
   renderLastQueryPanel();
 }
 
+// setLastQueriedLine (yukarıda) sadece "en son sorgulanan farklı hatlar"
+// listesini tutuyor — aynı hat tekrar sorgulanınca eski kaydın üstüne
+// yazılıyor, geçmiş zaman bilgisi kayboluyor. Bunun yanında, HER hat için
+// kendi geçmişini ayrı tutan bir yapı da saklıyoruz: { [lineId]: [iso, iso, iso] }
+// en yeni index 0'da, en fazla MAX_LINE_HISTORY kayıt. Bu, bir hattın
+// popup'ı açıldığında "bu hat en son ne zamanlar sorgulandı" bilgisini
+// göstermek için kullanılıyor (bkz. popupHtml).
+const LINE_HISTORY_KEY = "yedas_line_query_history";
+const MAX_LINE_HISTORY = 3;
+
+function getLineQueryHistory(lineId) {
+  try {
+    const raw = localStorage.getItem(LINE_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const arr = parsed && parsed[lineId];
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function recordLineQuery(lineId) {
+  let all = {};
+  try {
+    const raw = localStorage.getItem(LINE_HISTORY_KEY);
+    all = raw ? JSON.parse(raw) : {};
+    if (!all || typeof all !== "object") all = {};
+  } catch (e) {
+    all = {};
+  }
+  const existing = Array.isArray(all[lineId]) ? all[lineId] : [];
+  const updated = [new Date().toISOString(), ...existing].slice(0, MAX_LINE_HISTORY);
+  all[lineId] = updated;
+  localStorage.setItem(LINE_HISTORY_KEY, JSON.stringify(all));
+  return updated;
+}
+
 function setStatus(text) {
   statusText.textContent = text;
 }
@@ -553,6 +626,19 @@ function popupHtml(row) {
     queryNote += " (klasöre elle cd yapman gerekir — CONFIG.LOCAL_PROJECT_PATH boş)";
   }
 
+  // Bu hattın kendi geçmişi: aynı hat farklı zamanlarda birden fazla kez
+  // sorgulanmış olabilir, en fazla son 3 sorgu zamanı burada listelenir.
+  const history = getLineQueryHistory(row.line_id);
+  const historyHtml = history.length
+    ? `
+    <div class="popup-history">
+      <div class="popup-history-title">Bu hat için son ${history.length} sorgu</div>
+      <ul class="popup-history-list">
+        ${history.map(iso => `<li>${escapeHtml(new Date(iso).toLocaleString("tr-TR"))}</li>`).join("")}
+      </ul>
+    </div>`
+    : "";
+
   return `
     <div class="popup-title">${escapeHtml(row.line_name)}</div>
     <div class="popup-row"><b>${RISK_LABELS[row.risk_level] || "—"}</b></div>
@@ -564,6 +650,7 @@ function popupHtml(row) {
       📋 Bu hattı sorgula (PowerShell komutunu kopyala)
     </button>
     <div class="popup-query-note">${queryNote}</div>
+    ${historyHtml}
   `;
 }
 
@@ -616,6 +703,14 @@ async function copyQueryCommand(lineId) {
   }
 
   setLastQueriedLine(lineId);
+  recordLineQuery(lineId);
+
+  // Popup açıkken hemen güncellensin ki yeni sorgu zamanı "Bu hat için
+  // son sorgular" listesinde anında görünsün (kapat-aç yapmaya gerek kalmadan).
+  const entry = layerByLineId[lineId];
+  if (entry) {
+    entry.main.setPopupContent(popupHtml(row));
+  }
 }
 
 function renderList(rows) {
