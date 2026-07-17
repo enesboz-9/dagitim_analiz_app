@@ -314,6 +314,15 @@
   .popup-title{ font-weight:600; font-size:13px; margin-bottom:4px; }
   .popup-row{ font-size: 12px; color: var(--muted); margin-top:2px; }
   .popup-row b{ color: var(--text); font-weight:500; }
+  .confidence-badge{
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 999px;
+    margin-left: 4px;
+    letter-spacing: 0.01em;
+  }
   .popup-query-btn{
     margin-top: 8px;
     width: 100%;
@@ -472,6 +481,30 @@ const RISK_LABELS = {
 };
 const RISK_ORDER = { high: 0, medium: 1, low: 2, unknown: 3 };
 
+// Bulut oranı yüksek olduğunda Sentinel-2 optik görüntüdeki piksellerin
+// bir kısmı bulut/bulut gölgesiyle maskelenir ya da atmosferik düzeltme
+// bozulur; bu da NDVI ortalamasını gerçek bitki örtüsünden saptırabilir.
+// Yani "bulut oranı düşükse ölçüme daha çok güvenilir" mantıklı bir
+// yaklaşım — meteoroloji/uzaktan algılama literatüründe de kabul gören
+// bir sezgi. Eşikler kesin bir bilimsel standart değil, kabaca:
+//  <=%10  -> yüksek güven (bulut neredeyse etkisiz)
+//  %10-30 -> orta güven (kısmi maskeleme/gölge riski var)
+//  >%30   -> düşük güven (görüntünün önemli bir kısmı bulutlu, NDVI şüpheli)
+// cloud_cover_pct null ise (veri yok) güven puanı da hesaplanamaz.
+const CONFIDENCE_THRESHOLDS = { high: 10, medium: 30 };
+function getConfidence(cloudPct) {
+  if (cloudPct === null || cloudPct === undefined || Number.isNaN(cloudPct)) {
+    return { key: "unknown", label: "Bilinmiyor", color: "#8FA8B8" };
+  }
+  if (cloudPct <= CONFIDENCE_THRESHOLDS.high) {
+    return { key: "high", label: "Yüksek güven", color: "#2FE6A0" };
+  }
+  if (cloudPct <= CONFIDENCE_THRESHOLDS.medium) {
+    return { key: "medium", label: "Orta güven", color: "#FFB020" };
+  }
+  return { key: "low", label: "Düşük güven", color: "#FF4D5E" };
+}
+
 const statusText = document.getElementById("status-text");
 const listEl = document.getElementById("list");
 
@@ -611,6 +644,7 @@ function popupHtml(row) {
   const cloudNum = toNum(row.cloud_cover_pct);
   const ndvi = ndviNum !== null ? ndviNum.toFixed(3) : "—";
   const cloud = cloudNum !== null ? `${cloudNum}%` : "—";
+  const confidence = getConfidence(cloudNum);
 
   let queryNote;
   if (row.external_id) {
@@ -644,7 +678,7 @@ function popupHtml(row) {
     <div class="popup-row"><b>${RISK_LABELS[row.risk_level] || "—"}</b></div>
     <div class="popup-row">NDVI ortalama: <b>${ndvi}</b></div>
     <div class="popup-row">Son ölçüm: <b>${date}</b></div>
-    <div class="popup-row">Bulut oranı: <b>${cloud}</b></div>
+    <div class="popup-row">Bulut oranı: <b>${cloud}</b> <span class="confidence-badge" style="background:${confidence.color}22; color:${confidence.color}">${confidence.label}</span></div>
     <div class="popup-row">Gerilim: <b>${row.voltage_level || "—"}</b></div>
     <button id="query-btn-${row.line_id}" class="popup-query-btn" onclick="copyQueryCommand('${row.line_id}')">
       📋 Bu hattı sorgula (PowerShell komutunu kopyala)
@@ -737,6 +771,7 @@ function renderList(rows) {
       </div>
       <div class="meta mono">
         <span>NDVI ${(() => { const n = toNum(row.ndvi_mean); return n !== null ? n.toFixed(2) : "—"; })()}</span>
+        <span>Bulut ${(() => { const c = toNum(row.cloud_cover_pct); return c !== null ? `${c}%` : "—"; })()}</span>
         <span>${row.measurement_date || "veri yok"}</span>
       </div>
     </div>
@@ -799,6 +834,7 @@ function renderSearchResults(query) {
         </div>
         <div class="meta mono">
           <span>${escapeHtml(row.province || "il yok")}</span>
+          ${hasData ? `<span>Bulut ${(() => { const c = toNum(row.cloud_cover_pct); return c !== null ? `${c}%` : "—"; })()}</span>` : ""}
           <span>${row.measurement_date || "veri yok"}</span>
         </div>
       </div>
@@ -823,6 +859,9 @@ function lastQueryCardHtml(lineId, queriedAtRaw, row) {
   const queriedAt = queriedAtRaw ? new Date(queriedAtRaw).toLocaleString("tr-TR") : null;
   const ndviNum = toNum(row.ndvi_mean);
   const ndvi = ndviNum !== null ? ndviNum.toFixed(3) : "—";
+  const cloudNum = toNum(row.cloud_cover_pct);
+  const cloud = cloudNum !== null ? `${cloudNum}%` : "—";
+  const confidence = getConfidence(cloudNum);
   const hasData = row.risk_level !== "unknown";
   const badgeClass = hasData ? "" : "unknown-badge";
   const badgeStyle = hasData ? `style="background:${RISK_COLORS[row.risk_level]}22; color:${RISK_COLORS[row.risk_level]}"` : "";
@@ -833,6 +872,7 @@ function lastQueryCardHtml(lineId, queriedAtRaw, row) {
       <div class="meta">
         <span>Risk: <b class="risk-badge ${badgeClass}" ${badgeStyle}>${RISK_LABELS[row.risk_level] || "—"}</b></span>
         <span>NDVI ortalama: <b>${ndvi}</b></span>
+        <span>Bulut oranı: <b>${cloud}</b> <span class="confidence-badge" style="background:${confidence.color}22; color:${confidence.color}">${confidence.label}</span></span>
         <span>Son ölçüm: <b>${row.measurement_date || "veri yok"}</b></span>
       </div>
       ${queriedAt ? `<div class="queried-at">PowerShell komutu ${escapeHtml(queriedAt)} tarihinde kopyalandı</div>` : ""}
